@@ -1,109 +1,149 @@
-# My App — React + Express, Dockerized, deployed on AWS ECS behind an ALB
+# My App — React + Express on AWS EKS with Load Balancer
 
-## Structure
+A full-stack application with a React (Vite) frontend and Node/Express backend, containerized with Docker, pushed to Docker Hub, and deployed on AWS EKS (Kubernetes) behind an AWS Load Balancer.
+
+---
+
+## Live Screenshots
+
+### App Running via AWS Load Balancer
+![App Running](https://raw.githubusercontent.com/AkhiJAIN/k8s_project_frontend_backend_1/main/Screenshot%202026-07-01%20071005.png)
+
+### Backend API Response
+![Backend Response](https://raw.githubusercontent.com/AkhiJAIN/k8s_project_frontend_backend_1/main/Screenshot%202026-07-01%20071130.png)
+
+---
+
+## Project Structure
+
 ```
 myapp/
-  frontend/   React (Vite) app, served by Nginx in production
-  backend/    Express API
-  docker-compose.yml   for local testing of both containers together
+  frontend/          React (Vite) app, served by Nginx in production
+  backend/           Express API
+  docker-compose.yml For local testing of both containers together
+  k8s-manifests.yml  Kubernetes Deployments + Services
 ```
 
-## 1. Run locally
+---
+
+## Architecture
+
+```
+Internet
+   │
+   ▼
+AWS Load Balancer (ELB)
+   │
+   ▼
+Frontend Pods - Nginx (port 80)
+   │  /api/*
+   ▼
+Backend Pods - Express (port 4000)
+```
+
+---
+
+## 1. Run Locally
 
 ```bash
 docker compose up --build
 ```
+
 - Frontend: http://localhost:8080
 - Backend:  http://localhost:4000/api/hello
 
-The frontend container's Nginx proxies `/api/*` to the backend container
-for local testing only. In production on AWS, the ALB does this routing
-instead (see below).
+---
+
+## 2. Push Images to Docker Hub
+
+```bash
+# Login
+docker login
+
+# Build and push backend
+cd backend
+docker build -t <your-dockerhub-username>/myapp-backend:latest .
+docker push <your-dockerhub-username>/myapp-backend:latest
+
+# Build and push frontend
+cd ../frontend
+docker build -t <your-dockerhub-username>/myapp-frontend:latest .
+docker push <your-dockerhub-username>/myapp-frontend:latest
+```
 
 ---
 
-## 2. Push images to Amazon ECR (AWS Console)
+## 3. Create EKS Cluster
 
-For each service (`frontend`, `backend`):
-
-1. ECR → **Create repository** → name it `myapp-frontend` (repeat for `myapp-backend`).
-2. Click the repo → **View push commands** and run them, e.g.:
-   ```bash
-   aws ecr get-login-password --region <region> | docker login --username AWS --password-stdin <account-id>.dkr.ecr.<region>.amazonaws.com
-
-   cd backend
-   docker build -t myapp-backend .
-   docker tag myapp-backend:latest <account-id>.dkr.ecr.<region>.amazonaws.com/myapp-backend:latest
-   docker push <account-id>.dkr.ecr.<region>.amazonaws.com/myapp-backend:latest
-   ```
-   Repeat for `frontend`.
+```bash
+eksctl create cluster \
+  --name my-cluster \
+  --region ap-northeast-1 \
+  --nodegroup-name my-node \
+  --node-type c7i-flex.large \
+  --nodes 2 \
+  --nodes-min 1 \
+  --nodes-max 3 \
+  --managed
+```
 
 ---
 
-## 3. Create the ECS Cluster
+## 4. Connect kubectl to the Cluster
 
-1. ECS → **Create cluster** → Fargate (serverless, no EC2 to manage) → name it `myapp-cluster`.
-
----
-
-## 4. Create Task Definitions
-
-Create two task definitions (Fargate launch type):
-
-**`myapp-backend-task`**
-- Container: image = your `myapp-backend` ECR URI
-- Port mapping: `4000`
-- CPU/Memory: 0.25 vCPU / 0.5 GB is enough to start
-
-**`myapp-frontend-task`**
-- Container: image = your `myapp-frontend` ECR URI
-- Port mapping: `80`
-- Same CPU/Memory
+```bash
+aws eks update-kubeconfig --name my-cluster --region ap-northeast-1
+```
 
 ---
 
-## 5. Create the Application Load Balancer
+## 5. Deploy to Kubernetes
 
-1. EC2 → Load Balancers → **Create ALB** (internet-facing).
-2. Create two target groups, type **IP** (required for Fargate):
-   - `tg-backend` → port 4000 → health check path `/api/health`
-   - `tg-frontend` → port 80 → health check path `/`
-3. On the ALB listener (port 80, or 443 if you attach a cert via ACM):
-   - **Default rule** → forward to `tg-frontend`
-   - **Add rule**: if path is `/api/*` → forward to `tg-backend`
+```bash
+kubectl apply -f k8s-manifests.yml
+```
 
-This is what makes "frontend + backend, one app" work behind a single
-load balancer/domain — `/api/*` goes to Express, everything else goes
-to the React app.
+This creates:
+- `backend` Deployment (2 replicas) + ClusterIP Service
+- `frontend` Deployment (2 replicas) + LoadBalancer Service
 
 ---
 
-## 6. Create ECS Services
+## 6. Get the Live URL
 
-For each task definition, ECS → cluster → **Create Service**:
-- Launch type: Fargate
-- Desired tasks: 2 (for basic redundancy)
-- Attach to the ALB:
-  - backend service → `tg-backend`
-  - frontend service → `tg-frontend`
-- VPC/subnets: pick at least 2 public subnets (or private + NAT) and a
-  security group that allows inbound on the container port from the ALB's
-  security group only.
+```bash
+kubectl get svc frontend-svc
+```
+
+Copy the `EXTERNAL-IP` — that is your live app URL served by the AWS Load Balancer.
 
 ---
 
-## 7. Point your domain at the ALB
+## 7. Verify Everything is Running
 
-Route 53 (or your DNS provider) → create an A/ALIAS record pointing your
-domain to the ALB's DNS name.
+```bash
+kubectl get pods       # all 4 pods should show Running
+kubectl get svc        # frontend-svc shows EXTERNAL-IP
+```
+
+---
+
+## Tech Stack
+
+| Layer       | Technology                  |
+|-------------|----------------------------|
+| Frontend    | React + Vite               |
+| Backend     | Node.js + Express          |
+| Web Server  | Nginx                      |
+| Container   | Docker + Docker Hub        |
+| Orchestration | Kubernetes (AWS EKS)     |
+| Load Balancer | AWS ELB (auto-provisioned)|
+| Cloud       | AWS (ap-northeast-1)       |
 
 ---
 
 ## Notes
-- Both containers run as **separate ECS services** so you can scale,
-  redeploy, or roll back frontend and backend independently.
-- For HTTPS, request a free cert in **ACM**, attach it to a port-443
-  listener on the ALB, and redirect port 80 → 443.
-- When you're ready for CI/CD instead of manual console pushes, this
-  same structure maps cleanly onto GitHub Actions + `aws ecs update-service`,
-  happy to set that up later.
+
+- Frontend Nginx proxies `/api/*` to the backend service (`backend-svc:4000`) inside the cluster
+- Backend stays internal (`ClusterIP`) — only the frontend is publicly exposed
+- To update the app: rebuild the Docker image, push to Docker Hub, then run `kubectl rollout restart deployment/<name>`
